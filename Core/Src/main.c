@@ -25,6 +25,7 @@
 #include "motor.h"
 #include "MPU6050.h"
 #include "SerialCommands.h"
+#include "ps2.h"
 #include "string.h"
 #include "stdio.h"
 
@@ -45,7 +46,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
- I2C_HandleTypeDef hi2c2;
+I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -65,10 +66,10 @@ DMA_HandleTypeDef hdma_usart2_rx;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_TIM3_Init(void);
-static void MX_DMA_Init(void);
 static void MX_UART4_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM5_Init(void);
@@ -104,10 +105,14 @@ void InitTimers() {
 }
 
 void SetTimersDuty(uint8_t duty) {
-	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty);
-	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty);
-	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty);
-	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty);
+	if (duty > 100) duty = 100;
+	if (duty < 0) duty = 0;
+	float pw_resolution = (((float)(htim8).Init.Period + 1.0f) / 100.0f);
+	uint16_t pw_desired = pw_resolution * duty;
+	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, pw_desired);
+	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, pw_desired);
+	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, pw_desired);
+	__HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, pw_desired);
 }
 
 
@@ -142,6 +147,7 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -164,10 +170,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C2_Init();
   MX_TIM8_Init();
   MX_TIM3_Init();
-  MX_DMA_Init();
   MX_UART4_Init();
   MX_TIM4_Init();
   MX_TIM5_Init();
@@ -220,8 +226,22 @@ int main(void)
 //		HAL_UART_Transmit(&huart4, sprintBuffer, stringSize, 100);
 //	}
 
+	PS2_SetInit();
 	while (1) {
-		//MoveForward();
+		PS2_Receive();
+		stringSize = sprintf((char*)sprintBuffer, "Acceleration: LY:%d  LX:%i  RY:%d \r\n", PS2_LY, PS2_LX, PS2_KEY);
+		HAL_UART_Transmit(&huart4, sprintBuffer, stringSize, 100);
+		if(PS2_LY > 190) {
+			MoveForward();
+			SetTimersDuty(((PS2_LY - 190) * 100) / 64);
+			//SetTimersDuty(255);
+		}
+		else {
+			MoveBackward();
+			SetTimersDuty(((190 - PS2_LY) * 100) / 64);
+			//SetTimersDuty(100);
+		}
+		//SetRearRightMotorDirection(Backward);
 		if (isSerialCommandAvailable) {
 			HAL_GPIO_TogglePin(GPIOC, LED_Pin);
 			struct Command command = GetNextCommand();
@@ -799,6 +819,9 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -810,7 +833,11 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, R_AIN2_Pin|R_AIN1_Pin|F_AIN2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, PS2_CMD_Pin|PS2_CS_Pin|R_AIN2_Pin|R_AIN1_Pin
+                          |F_AIN2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(PS2_CLK_GPIO_Port, PS2_CLK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, R_BIN1_Pin|R_BIN2_Pin|F_BIN1_Pin|F_BIN2_Pin, GPIO_PIN_RESET);
@@ -818,12 +845,27 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(F_AIN1_GPIO_Port, F_AIN1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : LED_Pin R_AIN2_Pin R_AIN1_Pin F_AIN2_Pin */
-  GPIO_InitStruct.Pin = LED_Pin|R_AIN2_Pin|R_AIN1_Pin|F_AIN2_Pin;
+  /*Configure GPIO pins : LED_Pin PS2_CMD_Pin PS2_CS_Pin R_AIN2_Pin
+                           R_AIN1_Pin F_AIN2_Pin */
+  GPIO_InitStruct.Pin = LED_Pin|PS2_CMD_Pin|PS2_CS_Pin|R_AIN2_Pin
+                          |R_AIN1_Pin|F_AIN2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PS2_DATA_Pin */
+  GPIO_InitStruct.Pin = PS2_DATA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(PS2_DATA_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PS2_CLK_Pin */
+  GPIO_InitStruct.Pin = PS2_CLK_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(PS2_CLK_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : R_BIN1_Pin R_BIN2_Pin F_BIN1_Pin F_BIN2_Pin */
   GPIO_InitStruct.Pin = R_BIN1_Pin|R_BIN2_Pin|F_BIN1_Pin|F_BIN2_Pin;
@@ -839,6 +881,9 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(F_AIN1_GPIO_Port, &GPIO_InitStruct);
 
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
